@@ -1,0 +1,15 @@
+name: CI startup diagnostic
+
+on:
+  push:
+    branches: [tyranopocket/ci-diagnostic]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  startup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: echo "Runner startup confirmed"
