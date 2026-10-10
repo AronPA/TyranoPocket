@@ -1,0 +1,86 @@
+name: TyranoPocket Android 36 release build
+
+on:
+  push:
+    branches: [main, 'tyranopocket/**']
+  workflow_dispatch:
+
+# No repository writes, secrets, signing keys, releases, or account changes.
+permissions:
+  contents: read
+
+concurrency:
+  group: tyranopocket-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Verify the public source allowlist
+        run: python3 tools/check-public-source.py --tracked
+
+      - name: Select the runner's installed JDK and Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x "$JAVA_HOME_17_X64/bin/java"
+          test -f "$ANDROID_HOME/platforms/android-36/android.jar"
+          test -x "$ANDROID_HOME/build-tools/36.0.0/aapt2"
+          test -x "$ANDROID_HOME/build-tools/36.0.0/zipalign"
+          test -f "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+          echo "$JAVA_HOME_17_X64/bin" >> "$GITHUB_PATH"
+          test ! -e signing.properties
+          test ! -d signing
+          mkdir -p evidence
+
+      - name: Run all existing JVM and JavaScript checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/test-core.sh 2>&1 | tee evidence/ci-core-tests.txt
+          node --test tools/test-shim.mjs 2>&1 | tee evidence/ci-shim-tests.txt
+          python3 -m unittest discover -s tools -p 'test_release*.py' -v 2>&1 | tee evidence/ci-release-checks.txt
+
+      - name: Cross-check the official Electron ASAR tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --prefix tools --ignore-scripts --no-audit --no-fund
+          node tools/official-fixtures.mjs 2>&1 | tee evidence/ci-official-asar-write.txt
+          java -Xmx48m -cp .core-classes com.local.tyranopocket.core.OfficialAsarChecks fixtures/official .test-work/official 2>&1 | tee evidence/ci-official-asar-read.txt
+
+      - name: Build release, compile instrumentation, and run Gradle checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh gradlew --no-daemon --console=plain --stacktrace :core:check :app:testReleaseUnitTest :app:lintRelease :app:assembleRelease :app:assembleDebugAndroidTest 2>&1 | tee evidence/ci-gradle-build.txt
+
+      - name: Check APK contents and prepare the unsigned release kit
+        run: python3 tools/prepare-release-kit.py
+
+      - name: Upload unsigned APK and official signing tool
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: TyranoPocket-release-kit-${{ github.sha }}
+          path: release-kit/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Preserve real build and test logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: TyranoPocket-build-evidence-${{ github.sha }}
+          path: |
+            evidence/ci-*.txt
+            app/build/reports/
+            core/build/reports/
+          if-no-files-found: warn
+          retention-days: 14
